@@ -1,4 +1,4 @@
-import { useState } from 'react'
+import { useEffect, useState } from 'react'
 import {
   Activity,
   Bell,
@@ -11,8 +11,18 @@ import {
   Menu,
   Settings,
   Wind,
-  Zap,
 } from 'lucide-react'
+import {
+  CartesianGrid,
+  Line,
+  LineChart,
+  ResponsiveContainer,
+  Tooltip,
+  XAxis,
+  YAxis,
+} from 'recharts'
+import { getAccuracyData } from './services/accuracyService'
+import type { AccuracyResponse } from './types/accuracy'
 import './App.css'
 
 const navigation = [
@@ -22,40 +32,75 @@ const navigation = [
   { label: 'Data sources', icon: Database },
 ]
 
-const metrics = [
-  {
-    label: 'Latest wind forecast',
-    value: '—',
-    unit: 'MW',
-    note: 'Awaiting backend data',
-    icon: Wind,
-  },
-  {
-    label: 'Actual generation',
-    value: '—',
-    unit: 'MW',
-    note: 'Awaiting backend data',
-    icon: Zap,
-  },
-  {
-    label: 'Mean absolute error',
-    value: '—',
-    unit: 'MW',
-    note: 'Accuracy calculation pending',
-    icon: Activity,
-  },
-  {
-    label: 'Forecast bias',
-    value: '—',
-    unit: 'MW',
-    note: 'Accuracy calculation pending',
-    icon: ChartLine,
-  },
-]
+const formatNumber = (value: number | null | undefined) =>
+  value == null
+    ? '—'
+    : value.toLocaleString('en-GB', {
+        maximumFractionDigits: 2,
+      })
+
+const formatChartDate = (value: string) =>
+  new Date(value).toLocaleDateString('en-GB', {
+    day: '2-digit',
+    month: 'short',
+    timeZone: 'UTC',
+  })
 
 function App() {
   const [activePage, setActivePage] = useState('Overview')
   const [sidebarOpen, setSidebarOpen] = useState(false)
+  const [accuracyData, setAccuracyData] = useState<AccuracyResponse | null>(null)
+  const [loading, setLoading] = useState(true)
+  const [error, setError] = useState<string | null>(null)
+
+  useEffect(() => {
+    const fetchAccuracy = async () => {
+      try {
+        setLoading(true)
+        setError(null)
+        const data = await getAccuracyData()
+        setAccuracyData(data)
+      } catch (err) {
+        console.error('Failed to fetch accuracy data:', err)
+        setError('Unable to load wind generation data. Check that the backend is running.')
+      } finally {
+        setLoading(false)
+      }
+    }
+
+    fetchAccuracy()
+  }, [])
+
+  const metrics = [
+    {
+      label: 'Mean absolute error',
+      value: formatNumber(accuracyData?.metrics.mae),
+      unit: 'MW',
+      note: 'Average absolute forecast error',
+      icon: Activity,
+    },
+    {
+      label: 'Root mean square error',
+      value: formatNumber(accuracyData?.metrics.rmse),
+      unit: 'MW',
+      note: 'Penalises larger forecast errors',
+      icon: ChartLine,
+    },
+    {
+      label: 'Mean absolute percentage error',
+      value: formatNumber(accuracyData?.metrics.mape),
+      unit: '%',
+      note: 'Percentage forecast error',
+      icon: Wind,
+    },
+    {
+      label: 'Matched records',
+      value: formatNumber(accuracyData?.metrics.matched_records),
+      unit: 'hours',
+      note: 'Forecast and actual intervals matched',
+      icon: Database,
+    },
+  ]
 
   return (
     <div className="app-shell">
@@ -152,8 +197,8 @@ function App() {
             </div>
 
             <div className="data-status">
-              <span className="status-dot pending" />
-              API integration pending
+              <span className={`status-dot ${loading || error ? 'pending' : ''}`} />
+              {loading ? 'Connecting to API' : error ? 'API unavailable' : 'Live API data'}
             </div>
           </section>
 
@@ -164,8 +209,8 @@ function App() {
             <div className="context-copy">
               <strong>Day-ahead forecast selection</strong>
               <span>
-                Forecasts are selected using the latest publication available
-                by 10:00 UTC on the previous day.
+                {accuracyData?.forecast_strategy ??
+                  'Forecasts are selected using the latest publication available by 10:00 UTC on the previous day.'}
               </span>
             </div>
             <span className="cutoff-tag">10:00 UTC CUTOFF</span>
@@ -189,7 +234,7 @@ function App() {
                   </div>
                 </div>
                 <div className="metric-value">
-                  {value}
+                  {loading ? '...' : value}
                   <span>{unit}</span>
                 </div>
                 <div className="metric-note">{note}</div>
@@ -202,28 +247,89 @@ function App() {
               <div className="panel-heading">
                 <div>
                   <h2>Wind generation profile</h2>
-                  <p>Forecast versus actual generation</p>
+                  <p>Forecast versus actual generation · Hourly</p>
                 </div>
-                <button className="period-selector compact">
+                <div className="period-selector compact">
                   <CalendarDays size={15} />
                   January
                   <ChevronDown size={14} />
-                </button>
+                </div>
               </div>
 
               <div className="chart-placeholder">
-                <div className="placeholder-icon">
-                  <ChartLine size={25} />
-                </div>
-                <strong>Forecast analysis will appear here</strong>
-                <span>
-                  This chart will compare selected day-ahead forecasts with
-                  actual wind generation.
-                </span>
-                <div className="chart-legend">
-                  <span><i className="legend-forecast" /> Forecast</span>
-                  <span><i className="legend-actual" /> Actual</span>
-                </div>
+                {loading ? (
+                  <div className="chart-message">
+                    <strong>Loading forecast data...</strong>
+                    <span>Fetching January 2026 comparisons from the backend.</span>
+                  </div>
+                ) : error ? (
+                  <div className="chart-message">
+                    <strong>Unable to load chart</strong>
+                    <span>{error}</span>
+                  </div>
+                ) : accuracyData?.comparisons?.length ? (
+                  <div className="chart-container">
+                    <ResponsiveContainer width="100%" height={320}>
+                      <LineChart
+                        data={accuracyData.comparisons}
+                        margin={{ top: 12, right: 16, left: 8, bottom: 8 }}
+                      >
+                        <CartesianGrid strokeDasharray="3 3" vertical={false} />
+                        <XAxis
+                          dataKey="startTime"
+                          tickFormatter={formatChartDate}
+                          minTickGap={35}
+                          tick={{ fontSize: 11 }}
+                        />
+                        <YAxis
+                          tick={{ fontSize: 11 }}
+                          tickFormatter={(value: number) => `${Math.round(value / 1000)}k`}
+                          width={45}
+                        />
+                        <Tooltip
+                          labelFormatter={(label) =>
+                            new Date(String(label)).toLocaleString('en-GB', {
+                              dateStyle: 'medium',
+                              timeStyle: 'short',
+                              timeZone: 'UTC',
+                            }) + ' UTC'
+                          }
+                          formatter={(value, name) => [
+                            `${formatNumber(Number(value))} MW`,
+                            name === 'forecast' ? 'Forecast' : 'Actual',
+                          ]}
+                        />
+                        <Line
+                          type="monotone"
+                          dataKey="forecast"
+                          name="forecast"
+                          stroke="#32836b"
+                          strokeWidth={2}
+                          dot={false}
+                          activeDot={{ r: 4 }}
+                        />
+                        <Line
+                          type="monotone"
+                          dataKey="actual"
+                          name="actual"
+                          stroke="#4776a8"
+                          strokeWidth={2}
+                          dot={false}
+                          activeDot={{ r: 4 }}
+                        />
+                      </LineChart>
+                    </ResponsiveContainer>
+                    <div className="chart-legend">
+                      <span><i className="legend-forecast" /> Forecast</span>
+                      <span><i className="legend-actual" /> Actual</span>
+                    </div>
+                  </div>
+                ) : (
+                  <div className="chart-message">
+                    <strong>No comparison data available</strong>
+                    <span>The API returned no matched forecast and actual records.</span>
+                  </div>
+                )}
               </div>
             </article>
 
@@ -254,7 +360,7 @@ function App() {
                   <span className="method-number">03</span>
                   <div>
                     <strong>Accuracy evaluation</strong>
-                    <p>Measure forecast error across 30-minute delivery intervals.</p>
+                    <p>Compare hourly forecasts against hourly actual generation, averaged from two half-hourly readings.</p>
                   </div>
                 </div>
               </div>

@@ -242,6 +242,6 @@ async def get_accuracy():
         },
 
         "metrics": metrics,
-
+        "comparisons": comparisons,
         "sample_comparisons": comparisons[:10]
     }
